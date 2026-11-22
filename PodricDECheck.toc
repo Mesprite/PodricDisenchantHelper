@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: Podric DE Check
+## Notes: Vendor vs disenchant tooltip, using Crafter's Journal's saved AH prices.
+## Author: Gizmo
+## Version: 0.1.1
+## Dependencies: CraftersJournal
+PodricDECheck.lua
