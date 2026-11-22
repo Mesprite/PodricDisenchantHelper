@@ -1,0 +1,70 @@
+name: Automatically tag addon releases
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'PodricDECheck.toc'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: addon-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check release version
+        id: version
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          version_from() {
+            sed -nE 's/^## Version:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p' | tr -d '\r'
+          }
+          version=$(tr -d '\r' < 'PodricDECheck.toc' | version_from)
+          previous=$(git show "$BEFORE:PodricDECheck.toc" | tr -d '\r' | version_from)
+          if [[ "$version" == "$previous" ]]; then
+            echo "No version bump; no release."
+            exit 0
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)([.-]?[0-9]+)?)?$ ]]; then
+            echo "::error::Use a semantic addon version, optionally suffixed with alpha or beta."
+            exit 1
+          fi
+          tag="v$version"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            echo "::error::Tag already exists; choose a new version."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install Lua syntax checker
+        if: steps.version.outputs.tag != ''
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Validate Lua source
+        if: steps.version.outputs.tag != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.lua' | while IFS= read -r -d '' file; do
+            luac5.1 -p "$file"
+          done
+      - name: Publish version tag
+        if: steps.version.outputs.tag != ''
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Addon release $TAG"
+          git push origin "refs/tags/$TAG"
