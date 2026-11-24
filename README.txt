@@ -54,3 +54,6 @@ Read the new gm<mode>-<faction> scan keys and CJ last-known market
 when the game mode is not available, retaining legacy realm lookup.
 No changes to disenchant tables, material price fields or calculations.
 Requires CJ v0.67.0 or later for the new Forever client.
+
+
+Version 0.1.2: Auctionator completed full-scan material snapshots take priority; Crafter's Journal supplies missing prices. Run a full scan after installing to populate the new snapshot. Quick scans and shopping searches do not replace it. Prices are marked stale after six hours; failed scans retain the last successful snapshot. Both price addons are optional. Classic-derived disenchant estimates are unchanged.

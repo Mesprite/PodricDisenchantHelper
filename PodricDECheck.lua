@@ -1,5 +1,5 @@
--- Podric DE Check 0.1.1 for World of Warcraft: Forever (Interface 16001)
--- Read-only AH prices from Crafter's Journal. No Auctionator required.
+-- Podric DE Check 0.1.2 for World of Warcraft: Forever (Interface 16001)
+-- Completed Auctionator full scans first; Crafter's Journal fallback.
 -- Estimates use Classic disenchant brackets, not guaranteed Forever server drops.
 
 local ADDON = ...
@@ -101,14 +101,15 @@ local function getScan()
   if mode then
     local key = "gm" .. mode .. "-" .. faction
     local scan = scanFor(key)
-    if scan then return scan end
+    if scan then return scan, key end
     -- A migrated CJ database must not fall back to another market.
-    if type(db.dataKey) == "table" then return nil end
+    if type(db.dataKey) == "table" then return nil, key end
   end
 
   local realm = GetRealmName and GetRealmName()
   if type(realm) == "string" and realm ~= "" then
-    return scanFor(realm .. "-" .. faction)
+    local key = realm .. "-" .. faction
+    return scanFor(key), key
   end
 
   -- CJ remembers the last valid market per faction while the client is
@@ -116,10 +117,88 @@ local function getScan()
   if not mode and type(db.dataKey) == "table" then
     local key = db.dataKey[faction]
     if type(key) == "string" and key:sub(-#faction - 1) == "-" .. faction then
-      return scanFor(key)
+      return scanFor(key), key
     end
   end
   return nil
+end
+
+
+-- Save only relevant material prices from the actual completed full-scan payload.
+-- Ordinary searches and quick scans cannot overwrite this snapshot.
+local materials = {}
+for _, ids in ipairs({DUST, ESSENCE, SHARD}) do
+  for _, id in ipairs(ids) do materials[id] = true end
+end
+
+local function marketKey()
+  local faction = UnitFactionGroup("player")
+  local realm = GetRealmName()
+  if not faction or not realm or realm == "" then return nil end
+  local mode
+  if C_GameRules and C_GameRules.GetCurrentGameModeRecordID then
+    local ok, id = pcall(C_GameRules.GetCurrentGameModeRecordID)
+    if ok and type(id) == "number" and id > 0 then mode = id end
+  end
+  if not mode then return nil end
+  return realm .. ":" .. mode .. ":" .. faction
+end
+
+local function snapshot()
+  local key = marketKey()
+  if key and type(PodricDECheckDB) == "table" then
+    return PodricDECheckDB[key]
+  end
+end
+
+local listener
+local function registerAuctionator()
+  if listener then return end
+  local a = Auctionator
+  local events = a and a.FullScan and a.FullScan.Events
+  if not events or not a.EventBus or not events.ScanComplete or not events.ScanFailed or not events.ScanStart then return end
+  local activeKey
+  listener = {ReceiveEvent = function(_, event, rows)
+    if event == events.ScanStart then
+      activeKey = marketKey()
+      return
+    end
+    local key = activeKey
+    activeKey = nil
+    if not key or key ~= marketKey() then return end
+    PodricDECheckDB = type(PodricDECheckDB) == "table" and PodricDECheckDB or {}
+    local previous = PodricDECheckDB[key]
+    if event == events.ScanFailed then
+      previous = type(previous) == "table" and previous or {}
+      previous.failed = time()
+      PodricDECheckDB[key] = previous
+      return
+    end
+    if event ~= events.ScanComplete or type(rows) ~= "table" then return end
+    local items = {}
+    for _, row in pairs(rows) do
+      if type(row) == "table" then
+        local info = row.auctionInfo or row.replicateInfo
+        local id = type(row.itemLink) == "string" and tonumber(row.itemLink:match("item:(%d+)"))
+        if materials[id] and type(info) == "table" then
+          local count, buyout = tonumber(info[3]), tonumber(info[10])
+          if count and count > 0 and buyout and buyout > 0 then
+            local price = math.ceil(buyout / count)
+            if not items[id] or price < items[id] then items[id] = price end
+          end
+        end
+      end
+    end
+    PodricDECheckDB[key] = {time = time(), items = items}
+  end}
+  a.EventBus:Register(listener, {events.ScanStart, events.ScanComplete, events.ScanFailed})
+end
+
+local function cjFailed(scan, key)
+  local db = CraftersJournalDB
+  local fail = key and db and type(db.lastScanFail) == "table" and db.lastScanFail[key]
+  return type(fail) == "table" and type(fail.time) == "number"
+    and (not scan or type(scan.time) ~= "number" or fail.time > scan.time)
 end
 
 local function money(copper)
@@ -135,7 +214,7 @@ local function ageLabel(scan)
   if not scan or type(scan.time) ~= "number" or not time then return "unknown age", false end
   local seconds = math.max(0, time() - scan.time)
   if seconds < 3600 then return math.floor(seconds / 60) .. "m old", false end
-  if seconds < 86400 then return math.floor(seconds / 3600) .. "h old", seconds >= 43200 end
+  if seconds < 86400 then return math.floor(seconds / 3600) .. "h old", seconds >= 21600 end
   return math.floor(seconds / 86400) .. "d old", true
 end
 
@@ -163,26 +242,27 @@ local function appendDecision(tooltip, data)
   if tooltip.__podricDECheckID == itemID then return end
   tooltip.__podricDECheckID = itemID
 
-  local scan = getScan()
+  local scan, cjKey = getScan()
+  local auction = snapshot()
   tooltip:AddLine(" ")
-  tooltip:AddLine("Podric DE Check  |  Crafter's Journal", .3, .85, 1)
-  if not scan then
-    tooltip:AddLine("No Crafter's Journal AH scan for this ruleset/faction.", 1, .65, .35, true)
-    tooltip:AddLine("Update Crafter's Journal if needed, then scan the AH.", .75, .75, .75, true)
-    return
-  end
-
+  tooltip:AddLine("Podric DE Check", .3, .85, 1)
   local expected, missing = 0, {}
+  local usedAuction, usedCJ = false, false
   for _, outcome in ipairs(outcomes) do
-    local row = scan.items[outcome.id] or scan.items[tostring(outcome.id)]
-    local price = row and tonumber(row.minUnit)
+    local price = auction and type(auction.items) == "table" and tonumber(auction.items[outcome.id])
+    if price and price > 0 then
+      usedAuction = true
+    else
+      local row = scan and (scan.items[outcome.id] or scan.items[tostring(outcome.id)])
+      price = type(row) == "table" and tonumber(row.minUnit)
+      if price and price > 0 then usedCJ = true end
+    end
     if price and price > 0 then
       expected = expected + price * outcome.units
     else
       missing[#missing + 1] = outcome.id
     end
   end
-  local howOld, stale = ageLabel(scan)
   tooltip:AddDoubleLine("Vendor value", money(vendorPrice), 1, .85, .3, 1, 1, 1)
   if #missing > 0 then
     expected = math.floor(expected + .5)
@@ -205,7 +285,25 @@ local function appendDecision(tooltip, data)
       tooltip:AddLine("TIE: vendor is guaranteed; DE is random.", .9, .9, .5)
     end
   end
-  tooltip:AddLine("CJ lowest buyouts: " .. howOld .. (stale and " (STALE)" or ""), .65, .65, .65)
+  local function sourceLine(name, source)
+    local age, stale = ageLabel(source)
+    if stale or age == "unknown age" then
+      tooltip:AddLine(name .. ": " .. age .. (stale and " (STALE)" or ""), 1, .65, .35)
+    else
+      tooltip:AddLine(name .. ": " .. age, .65, .65, .65)
+    end
+  end
+  if usedAuction then sourceLine("Auctionator full scan", auction) end
+  if usedCJ then sourceLine("Crafter's Journal (fallback)", scan) end
+  if not auction or not auction.time then
+    tooltip:AddLine("Run an Auctionator full scan to enable primary prices.", .75, .75, .75, true)
+  end
+  if auction and auction.failed and (not auction.time or auction.failed >= auction.time) then
+    tooltip:AddLine("Auctionator full scan failed; previous prices retained.", 1, .65, .35, true)
+  end
+  if cjFailed(scan, cjKey) then
+    tooltip:AddLine("Crafter's Journal last scan cancelled; previous prices retained.", 1, .65, .35, true)
+  end
   tooltip:AddLine("DE is an average; Forever-specific results may differ.", .65, .65, .65, true)
 end
 
@@ -238,7 +336,13 @@ end
 
 local startup = CreateFrame("Frame")
 startup:RegisterEvent("PLAYER_LOGIN")
-startup:SetScript("OnEvent", function(self)
-  initTooltips()
-  self:UnregisterEvent("PLAYER_LOGIN")
+startup:RegisterEvent("ADDON_LOADED")
+startup:SetScript("OnEvent", function(self, event, name)
+  if event == "PLAYER_LOGIN" then
+    initTooltips()
+    registerAuctionator()
+    self:UnregisterEvent("PLAYER_LOGIN")
+  elseif name == "Auctionator" then
+    registerAuctionator()
+  end
 end)

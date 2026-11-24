@@ -1,7 +1,8 @@
 ## Interface: 16001
 ## Title: Podric DE Check
-## Notes: Vendor vs disenchant tooltip, using Crafter's Journal's saved AH prices.
+## Notes: Vendor vs disenchant tooltip, using Auctionator full scans with Crafter's Journal fallback.
 ## Author: Gizmo
-## Version: 0.1.1
-## Dependencies: CraftersJournal
+## Version: 0.1.2
+## OptionalDeps: Auctionator, CraftersJournal
+## SavedVariables: PodricDECheckDB
 PodricDECheck.lua
