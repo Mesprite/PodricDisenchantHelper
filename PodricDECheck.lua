@@ -1,4 +1,4 @@
--- Podric DE Check 0.1.3 for World of Warcraft: Forever (Interface 16001)
+-- Podric DE Check 0.1.4 for World of Warcraft: Forever (Interface 16001)
 -- Completed Auctionator full scans first; Crafter's Journal fallback.
 -- Estimates use Classic disenchant brackets, not guaranteed Forever server drops.
 
@@ -131,17 +131,18 @@ for _, ids in ipairs({DUST, ESSENCE, SHARD}) do
   for _, id in ipairs(ids) do materials[id] = true end
 end
 
+-- Forever's 21 November client patch can return an empty realm name.
+-- The AH market is identified by ruleset and faction, not the underlying realm.
 local function marketKey()
-  local faction = UnitFactionGroup("player")
-  local realm = GetRealmName()
-  if not faction or not realm or realm == "" then return nil end
-  local mode
-  if C_GameRules and C_GameRules.GetCurrentGameModeRecordID then
+  local faction = UnitFactionGroup and UnitFactionGroup("player")
+  if type(faction) ~= "string" or faction == "" then return nil end
+  if C_GameRules and type(C_GameRules.GetCurrentGameModeRecordID) == "function" then
     local ok, id = pcall(C_GameRules.GetCurrentGameModeRecordID)
-    if ok and type(id) == "number" and id > 0 then mode = id end
+    if ok and type(id) == "number" and id > 0 then
+      return "gm" .. id .. "-" .. faction
+    end
   end
-  if not mode then return nil end
-  return realm .. ":" .. mode .. ":" .. faction
+  return nil
 end
 
 local function snapshot()
@@ -286,7 +287,7 @@ local function appendDecision(tooltip, data)
   if #missing > 0 then
     expected = math.floor(expected + .5)
     tooltip:AddDoubleLine("Known DE (minimum)", money(expected), 1, .85, .3, 1, 1, 1)
-    tooltip:AddLine("Missing " .. #missing .. " material price(s) missing.", 1, .65, .35, true)
+    tooltip:AddLine("Missing " .. #missing .. " material price(s).", 1, .65, .35, true)
     if expected > vendorPrice then
       tooltip:AddDoubleLine("DISENCHANT (partial)", "+" .. money(expected - vendorPrice), .25, 1, .4, .25, 1, .4)
     else
