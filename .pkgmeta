@@ -1,3 +1,6 @@
 package-as: PodricDECheck
 ignore:
   - README.md
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown

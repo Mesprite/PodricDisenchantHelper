@@ -45,6 +45,18 @@ jobs:
             echo "::error::Tag already exists; choose a new version."
             exit 1
           fi
+          if [[ ! -s CHANGELOG.md ]] || ! grep -Fxq "# $tag" CHANGELOG.md || git diff --quiet "$BEFORE" "$GITHUB_SHA" -- CHANGELOG.md; then
+            echo "::error::Update CHANGELOG.md with the new version and release notes before publishing."
+            exit 1
+          fi
+          if ! grep -Fxq "manual-changelog:" .pkgmeta || ! grep -Fxq "  filename: CHANGELOG.md" .pkgmeta || ! grep -Fxq "  markup-type: markdown" .pkgmeta; then
+            echo "::error::Manual changelog configuration is required for privacy."
+            exit 1
+          fi
+          if grep -Eq '[[:alnum:]_.%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' CHANGELOG.md; then
+            echo "::error::Email address detected in release notes."
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Install Lua syntax checker
         if: steps.version.outputs.tag != ''
