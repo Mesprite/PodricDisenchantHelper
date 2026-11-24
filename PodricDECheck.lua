@@ -1,4 +1,4 @@
--- Podric DE Check 0.1.2 for World of Warcraft: Forever (Interface 16001)
+-- Podric DE Check 0.1.3 for World of Warcraft: Forever (Interface 16001)
 -- Completed Auctionator full scans first; Crafter's Journal fallback.
 -- Estimates use Classic disenchant brackets, not guaranteed Forever server drops.
 
@@ -125,7 +125,7 @@ end
 
 
 -- Save only relevant material prices from the actual completed full-scan payload.
--- Ordinary searches and quick scans cannot overwrite this snapshot.
+-- Ordinary searches cannot overwrite this snapshot; both AH-wide modes can.
 local materials = {}
 for _, ids in ipairs({DUST, ESSENCE, SHARD}) do
   for _, id in ipairs(ids) do materials[id] = true end
@@ -155,43 +155,62 @@ local listener
 local function registerAuctionator()
   if listener then return end
   local a = Auctionator
-  local events = a and a.FullScan and a.FullScan.Events
-  if not events or not a.EventBus or not events.ScanComplete or not events.ScanFailed or not events.ScanStart then return end
-  local activeKey
+  if not a or not a.EventBus then return end
+  local eventMap, names, active = {}, {}, {}
+  for _, kind in ipairs({"FullScan", "IncrementalScan"}) do
+    local events = a[kind] and a[kind].Events
+    if events and events.ScanStart and events.ScanComplete and events.ScanFailed then
+      for _, phase in ipairs({"ScanStart", "ScanComplete", "ScanFailed"}) do
+        local event = events[phase]
+        eventMap[event] = {kind = kind, phase = phase}
+        names[#names + 1] = event
+      end
+    end
+  end
+  if #names == 0 then return end
   listener = {ReceiveEvent = function(_, event, rows)
-    if event == events.ScanStart then
-      activeKey = marketKey()
+    local meta = eventMap[event]
+    if not meta then return end
+    local kind, phase = meta.kind, meta.phase
+    if phase == "ScanStart" then
+      active[kind] = marketKey()
       return
     end
-    local key = activeKey
-    activeKey = nil
+    local key = active[kind]
+    active[kind] = nil
     if not key or key ~= marketKey() then return end
     PodricDECheckDB = type(PodricDECheckDB) == "table" and PodricDECheckDB or {}
     local previous = PodricDECheckDB[key]
-    if event == events.ScanFailed then
+    if phase == "ScanFailed" then
       previous = type(previous) == "table" and previous or {}
       previous.failed = time()
       PodricDECheckDB[key] = previous
       return
     end
-    if event ~= events.ScanComplete or type(rows) ~= "table" then return end
+    if type(rows) ~= "table" then return end
     local items = {}
     for _, row in pairs(rows) do
       if type(row) == "table" then
-        local info = row.auctionInfo or row.replicateInfo
-        local id = type(row.itemLink) == "string" and tonumber(row.itemLink:match("item:(%d+)"))
-        if materials[id] and type(info) == "table" then
-          local count, buyout = tonumber(info[3]), tonumber(info[10])
-          if count and count > 0 and buyout and buyout > 0 then
-            local price = math.ceil(buyout / count)
-            if not items[id] or price < items[id] then items[id] = price end
+        local id, price
+        if kind == "IncrementalScan" then
+          id = type(row.itemKey) == "table" and tonumber(row.itemKey.itemID)
+          if (tonumber(row.totalQuantity) or 0) > 0 then price = tonumber(row.minPrice) end
+        else
+          local info = row.auctionInfo or row.replicateInfo
+          id = type(row.itemLink) == "string" and tonumber(row.itemLink:match("item:(%d+)"))
+          if type(info) == "table" then
+            local count, buyout = tonumber(info[3]), tonumber(info[10])
+            if count and count > 0 and buyout and buyout > 0 then price = math.ceil(buyout / count) end
           end
+        end
+        if id and materials[id] and price and price > 0 then
+          if not items[id] or price < items[id] then items[id] = price end
         end
       end
     end
     PodricDECheckDB[key] = {time = time(), items = items}
   end}
-  a.EventBus:Register(listener, {events.ScanStart, events.ScanComplete, events.ScanFailed})
+  a.EventBus:Register(listener, names)
 end
 
 local function cjFailed(scan, key)
@@ -263,48 +282,43 @@ local function appendDecision(tooltip, data)
       missing[#missing + 1] = outcome.id
     end
   end
-  tooltip:AddDoubleLine("Vendor value", money(vendorPrice), 1, .85, .3, 1, 1, 1)
+  tooltip:AddDoubleLine("Vendor", money(vendorPrice), 1, .85, .3, 1, 1, 1)
   if #missing > 0 then
     expected = math.floor(expected + .5)
-    tooltip:AddDoubleLine("Known DE value (at least)", money(expected), 1, .85, .3, 1, 1, 1)
-    tooltip:AddLine("Missing " .. #missing .. " material AH price(s); full DE value unknown.", 1, .65, .35, true)
+    tooltip:AddDoubleLine("Known DE (minimum)", money(expected), 1, .85, .3, 1, 1, 1)
+    tooltip:AddLine("Missing " .. #missing .. " material price(s) missing.", 1, .65, .35, true)
     if expected > vendorPrice then
-      tooltip:AddDoubleLine("DISENCHANT (known mats beat vendor)", "+" .. money(expected - vendorPrice), .25, 1, .4, .25, 1, .4)
+      tooltip:AddDoubleLine("DISENCHANT (partial)", "+" .. money(expected - vendorPrice), .25, 1, .4, .25, 1, .4)
     else
       tooltip:AddLine("No reliable verdict until missing mats are priced.", 1, .65, .35, true)
     end
   else
     expected = math.floor(expected + .5)
-    tooltip:AddDoubleLine("Expected DE material value", money(expected), 1, .85, .3, 1, 1, 1)
+    tooltip:AddDoubleLine("Estimated DE", money(expected), 1, .85, .3, 1, 1, 1)
     local difference = math.abs(expected - vendorPrice)
     if expected > vendorPrice then
-      tooltip:AddDoubleLine("DISENCHANT (expected saving)", "+" .. money(difference), .25, 1, .4, .25, 1, .4)
+      tooltip:AddDoubleLine("DISENCHANT", "+" .. money(difference), .25, 1, .4, .25, 1, .4)
     elseif expected < vendorPrice then
-      tooltip:AddDoubleLine("VENDOR (better guaranteed value)", "+" .. money(difference), 1, .65, .35, 1, .65, .35)
+      tooltip:AddDoubleLine("VENDOR", "+" .. money(difference), 1, .65, .35, 1, .65, .35)
     else
       tooltip:AddLine("TIE: vendor is guaranteed; DE is random.", .9, .9, .5)
     end
   end
-  local function sourceLine(name, source)
+  local function sourceLine(name, source, failed)
     local age, stale = ageLabel(source)
-    if stale or age == "unknown age" then
-      tooltip:AddLine(name .. ": " .. age .. (stale and " (STALE)" or ""), 1, .65, .35)
-    else
-      tooltip:AddLine(name .. ": " .. age, .65, .65, .65)
-    end
+    local suffix = (stale and " (stale)" or "") .. (failed and " (scan failed)" or "")
+    local warning = stale or failed or age == "unknown age"
+    tooltip:AddLine(name .. " · " .. age .. suffix, warning and 1 or .65, .65, warning and .35 or .65, true)
   end
-  if usedAuction then sourceLine("Auctionator full scan", auction) end
-  if usedCJ then sourceLine("Crafter's Journal (fallback)", scan) end
-  if not auction or not auction.time then
-    tooltip:AddLine("Run an Auctionator full scan to enable primary prices.", .75, .75, .75, true)
+  if usedAuction then
+    sourceLine("Auctionator", auction, auction.failed and auction.failed >= auction.time)
   end
-  if auction and auction.failed and (not auction.time or auction.failed >= auction.time) then
-    tooltip:AddLine("Auctionator full scan failed; previous prices retained.", 1, .65, .35, true)
+  if usedCJ then
+    sourceLine("CJ fallback", scan, cjFailed(scan, cjKey))
   end
-  if cjFailed(scan, cjKey) then
-    tooltip:AddLine("Crafter's Journal last scan cancelled; previous prices retained.", 1, .65, .35, true)
+  if not usedAuction and not usedCJ then
+    tooltip:AddLine("No AH prices; scan Auctionator.", 1, .65, .35, true)
   end
-  tooltip:AddLine("DE is an average; Forever-specific results may differ.", .65, .65, .65, true)
 end
 
 local function hookCleared(tooltip)
