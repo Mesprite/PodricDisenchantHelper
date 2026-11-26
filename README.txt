@@ -1,4 +1,4 @@
-Podric DE Check v0.1.1 - WoW Forever
+Podric DE Check v0.1.5 - WoW Forever
 ==================================
 What it does
 ------------
@@ -57,3 +57,5 @@ Requires CJ v0.67.0 or later for the new Forever client.
 
 
 Version 0.1.2: Auctionator completed full-scan material snapshots take priority; Crafter's Journal supplies missing prices. Run a full scan after installing to populate the new snapshot. Quick scans and shopping searches do not replace it. Prices are marked stale after six hours; failed scans retain the last successful snapshot. Both price addons are optional. Classic-derived disenchant estimates are unchanged.
+
+Version 0.1.5: Snapshot keys now match Auctionator’s active database. Run a new full scan after installing. Use /podricde for local scan diagnostics. Full-scan-only price policy and Classic-derived estimates are unchanged.

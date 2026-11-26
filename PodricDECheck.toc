@@ -2,7 +2,7 @@
 ## Title: Podric DE Check
 ## Notes: Vendor vs disenchant tooltip, using Auctionator full scans with Crafter's Journal fallback.
 ## Author: Gizmo
-## Version: 0.1.4
+## Version: 0.1.5
 ## OptionalDeps: Auctionator, CraftersJournal
 ## SavedVariables: PodricDECheckDB
 PodricDECheck.lua

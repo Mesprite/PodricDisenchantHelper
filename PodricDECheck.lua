@@ -1,4 +1,4 @@
--- Podric DE Check 0.1.4 for World of Warcraft: Forever (Interface 16001)
+-- Podric DE Check 0.1.5 for World of Warcraft: Forever (Interface 16001)
 -- Completed Auctionator full scans first; Crafter's Journal fallback.
 -- Estimates use Classic disenchant brackets, not guaranteed Forever server drops.
 
@@ -131,19 +131,20 @@ for _, ids in ipairs({DUST, ESSENCE, SHARD}) do
   for _, id in ipairs(ids) do materials[id] = true end
 end
 
--- Forever's 21 November client patch can return an empty realm name.
--- The AH market is identified by ruleset and faction, not the underlying realm.
+-- Match the active database selected by Auctionator itself. In Forever v354,
+-- State.CurrentRealm is the ruleset plus faction (e.g. "PvE Alliance").
+-- Do not guess a market or reuse another faction's snapshot.
 local function marketKey()
+  local a = Auctionator
+  local key = a and a.State and a.State.CurrentRealm
   local faction = UnitFactionGroup and UnitFactionGroup("player")
-  if type(faction) ~= "string" or faction == "" then return nil end
-  if C_GameRules and type(C_GameRules.GetCurrentGameModeRecordID) == "function" then
-    local ok, id = pcall(C_GameRules.GetCurrentGameModeRecordID)
-    if ok and type(id) == "number" and id > 0 then
-      return "gm" .. id .. "-" .. faction
-    end
-  end
-  return nil
+  if type(key) ~= "string" or type(faction) ~= "string" or faction == "" then return nil end
+  local suffix = " " .. faction
+  if #key <= #suffix or key:sub(-#suffix) ~= suffix then return nil end
+  return "auctionator:" .. key
 end
+
+local status = {message = "No completed scan captured this session."}
 
 local function snapshot()
   local key = marketKey()
@@ -156,7 +157,10 @@ local listener
 local function registerAuctionator()
   if listener then return end
   local a = Auctionator
-  if not a or not a.EventBus then return end
+  if not a or not a.EventBus then
+    status.message = "Auctionator event bus unavailable."
+    return
+  end
   local eventMap, names, active = {}, {}, {}
   for _, kind in ipairs({"FullScan", "IncrementalScan"}) do
     local events = a[kind] and a[kind].Events
@@ -168,27 +172,38 @@ local function registerAuctionator()
       end
     end
   end
-  if #names == 0 then return end
+  if #names == 0 then
+    status.message = "Auctionator full-scan events unavailable."
+    return
+  end
   listener = {ReceiveEvent = function(_, event, rows)
     local meta = eventMap[event]
     if not meta then return end
     local kind, phase = meta.kind, meta.phase
     if phase == "ScanStart" then
       active[kind] = marketKey()
+      status.message = kind .. " started; market: " .. tostring(active[kind])
       return
     end
     local key = active[kind]
     active[kind] = nil
-    if not key or key ~= marketKey() then return end
+    if not key or key ~= marketKey() then
+      status.message = kind .. " " .. phase .. ": market unavailable or changed; snapshot not saved."
+      return
+    end
     PodricDECheckDB = type(PodricDECheckDB) == "table" and PodricDECheckDB or {}
     local previous = PodricDECheckDB[key]
     if phase == "ScanFailed" then
       previous = type(previous) == "table" and previous or {}
+      status.message = kind .. " failed; previous snapshot retained."
       previous.failed = time()
       PodricDECheckDB[key] = previous
       return
     end
-    if type(rows) ~= "table" then return end
+    if type(rows) ~= "table" then
+      status.message = kind .. " completed without a readable scan payload."
+      return
+    end
     local items = {}
     for _, row in pairs(rows) do
       if type(row) == "table" then
@@ -200,6 +215,7 @@ local function registerAuctionator()
           local info = row.auctionInfo or row.replicateInfo
           id = type(row.itemLink) == "string" and tonumber(row.itemLink:match("item:(%d+)"))
           if type(info) == "table" then
+            id = id or tonumber(info[17])
             local count, buyout = tonumber(info[3]), tonumber(info[10])
             if count and count > 0 and buyout and buyout > 0 then price = math.ceil(buyout / count) end
           end
@@ -209,9 +225,13 @@ local function registerAuctionator()
         end
       end
     end
+    local count = 0
+    for _ in pairs(items) do count = count + 1 end
+    status.message = kind .. " completed; captured " .. count .. " material prices."
     PodricDECheckDB[key] = {time = time(), items = items}
   end}
   a.EventBus:Register(listener, names)
+  status.message = "Listening for Auctionator full scans."
 end
 
 local function cjFailed(scan, key)
@@ -312,7 +332,7 @@ local function appendDecision(tooltip, data)
     tooltip:AddLine(name .. " · " .. age .. suffix, warning and 1 or .65, .65, warning and .35 or .65, true)
   end
   if usedAuction then
-    sourceLine("Auctionator", auction, auction.failed and auction.failed >= auction.time)
+    sourceLine("Auctionator", auction, auction.failed and (not auction.time or auction.failed >= auction.time))
   end
   if usedCJ then
     sourceLine("CJ fallback", scan, cjFailed(scan, cjKey))
@@ -361,3 +381,17 @@ startup:SetScript("OnEvent", function(self, event, name)
     registerAuctionator()
   end
 end)
+
+-- Local diagnostics: no chat broadcast, and no saved-variable changes.
+SLASH_PODRICDECHECK1 = "/podricde"
+SlashCmdList.PODRICDECHECK = function()
+  local auction = snapshot()
+  local count = 0
+  if auction and type(auction.items) == "table" then
+    for _ in pairs(auction.items) do count = count + 1 end
+  end
+  local age = ageLabel(auction)
+  print("Podric DE Check 0.1.5 | market: " .. tostring(marketKey()))
+  print("Listener: " .. status.message)
+  print("Snapshot: " .. count .. " material prices, " .. age)
+end
